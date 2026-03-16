@@ -1,4 +1,4 @@
-# TikTok Live Comment Listener (Python)
+# TikTok Live Comment Listener Python ( OSIRIS )
 
 Bu layihə **TikTok Live yayımına qoşularaq real vaxtda gələn şərhləri oxuyan və terminalda göstərən Python scriptidir**.
 
