@@ -92,26 +92,30 @@ pip install TikTokLive
 
 # İstifadə
 
-Script daxilində aşağıdakı hissədə **TikTok istifadəçi adını dəyişmək lazımdır**
+
 
 ```python
-client = TikTokLiveClient(unique_id='@asi_live1')
-```
+    python deneme.py username
+    python deneme.py @username
 
+
+```
+Xüsusiyyətlər:
+- username-ə görə avtomatik qovluq yaradır
+- output/<username>/<YYYY-MM-DD>/<HH-MM-SS>/ strukturu ilə saxlayır
+- videos/ altında 1 dəqiqəlik MP4 seqmentləri yaradır
+- data/ altında comment, gift, join və digər event fayllarını saxlayır
+- uzunmüddətli monitor rejimində işləyir
+- xətalarda geri-çəkilmə (backoff) və təkrar cəhd edir
+- recorder prosesi gözlənilmədən dayanarsa onu yenidən başlada bilir
 burada:
-
-```
-@asi_live1
-```
-
-yerinə istədiyiniz **TikTok live yayımlayan hesabın username-ni yazın.**
 
 ---
 
 ## Scripti işə salmaq
 
 ```bash
-python main.py
+python main.py "username"
 ```
 
 ---
@@ -134,7 +138,7 @@ Otaq ID: 123456789
 ```
 tiktok-live-listener
 │
-├── main.py
+├── main2.py
 ├── README.md
 ```
 
