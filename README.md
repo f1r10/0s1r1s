@@ -95,8 +95,8 @@ pip install TikTokLive
 
 
 ```python
-    python deneme.py username
-    python deneme.py @username
+    python main2.py username
+    python main2.py @username
 
 
 ```
@@ -115,7 +115,7 @@ burada:
 ## Scripti işə salmaq
 
 ```bash
-python main.py "username"
+python main2.py "username"
 ```
 
 ---
