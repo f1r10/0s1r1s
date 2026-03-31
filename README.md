@@ -144,24 +144,7 @@ tiktok-live-listener
 
 ---
 
-# Mümkün inkişaflar
 
-Bu layihə gələcəkdə aşağıdakı funksiyalarla genişləndirilə bilər:
-
-* Şərhləri fayla yazmaq
-* MongoDB və ya MySQL bazaya yazmaq
-* AI ilə sentiment analizi
-* spam filter
-* avtomatik cavab sistemi
-* OBS və stream overlay inteqrasiyası
-
----
-
-# Lisenziya
-
-MIT License
-
----
 
 # Müəllif
 
