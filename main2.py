@@ -227,29 +227,88 @@ def yeni_sessiya_qovlugu(unique_id: str) -> Path:
 
 
 # ===========================================================================
-# USER_INFO-DAN TƏHLÜKƏSİZ OXUMA  ← YENİ KÖMƏKÇI
+# USER MƏLUMAT OXUMA  ← YENİLƏNDİ
 # ===========================================================================
+
+def _str(v) -> Optional[str]:
+    """Boş string və None-u None-a çevirir."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s if s else None
+
+
+def _proto_field(obj, *adlar):
+    """
+    Bir proto/dataclass obyektindən sırayla field adlarını yoxlayır,
+    ilk boş olmayan dəyəri qaytarır.
+    """
+    for ad in adlar:
+        try:
+            v = _str(getattr(obj, ad, None))
+            if v:
+                return v
+        except Exception:
+            pass
+    return None
+
 
 def user_melumat(event) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
-    event.user əvəzinə event.user_info proto obyektindən birbaşa oxuyur.
-    Bu, nickName/nick_name uyğunsuzluq xətasını tamamilə aradan qaldırır.
+    TikTokLive-in müxtəlif versiyalarında user məlumatı fərqli
+    field-lərdə saxlanılır. Bu funksiya bütün məlum yerlərə baxır.
+
     Qaytarır: (user_id, unique_id, nickname)
+
+    Axtarış sırası:
+      1. event.user_info      — köhnə versiyalarda əsas yer
+      2. event.sender         — bəzi event tipləri
+      3. event.from_user      — bəzi event tipləri
+      4. event.user           — wrapper, crash riski var, try/except ilə
+      5. event-in özündə      — bəzən düz field olaraq mövcuddur
     """
+    kandidatlar = []
+
+    # 1–3: birbaşa proto field-lər (wrapper yoxdur, crash riski az)
+    for field_adi in ("user_info", "sender", "from_user"):
+        try:
+            obj = getattr(event, field_adi, None)
+            if obj is not None:
+                kandidatlar.append(obj)
+        except Exception:
+            pass
+
+    # 4: event.user — wrapper, crash edə bilər, amma cəhd edirik
     try:
-        info = event.user_info          # ham proto mesajı, heç bir wrapper yoxdur
-        uid  = str(getattr(info, "user_id",   None) or "")
-        uniq = str(getattr(info, "unique_id", None) or "")
-        # kitabxana versiyasına görə ya nick_name, ya nickName ola bilər
-        nick = (
-            getattr(info, "nick_name",  None)
-            or getattr(info, "nickname",  None)
-            or getattr(info, "nickName",  None)
-            or ""
-        )
-        return uid or None, uniq or None, str(nick) or None
+        u = event.user
+        if u is not None:
+            kandidatlar.append(u)
     except Exception:
-        return None, None, None
+        pass
+
+    # 5: bəzi eventlərdə user_id/unique_id birbaşa event-də olur
+    kandidatlar.append(event)
+
+    # Hər kandidatdan oxu, ilk dolu dəyərləri götür
+    user_id   = None
+    unique_id = None
+    nickname  = None
+
+    for obj in kandidatlar:
+        if user_id is None:
+            user_id = _proto_field(obj, "user_id", "userId", "uid")
+        if unique_id is None:
+            unique_id = _proto_field(obj, "unique_id", "uniqueId", "display_id")
+        if nickname is None:
+            nickname = _proto_field(
+                obj,
+                "nick_name", "nickname", "nickName",  # bütün variant yazılışlar
+                "display_name", "displayName",
+            )
+        if user_id and unique_id and nickname:
+            break
+
+    return user_id, unique_id, nickname
 
 
 # ===========================================================================
@@ -316,17 +375,15 @@ def recorder_baslat(
         log.warning("yt-dlp tapılmadı. Video yazılmayacaq.")
         return None
 
-    temiz    = username_temizle(unique_id)
-    canli_url = f"https://www.tiktok.com/@{temiz}/live"
+    temiz         = username_temizle(unique_id)
+    canli_url     = f"https://www.tiktok.com/@{temiz}/live"
     output_pattern = str(videos_dir / "live_%03d.mp4")
-    ffmpeg_dir = str(ffmpeg_yolu.parent)
+    ffmpeg_dir    = str(ffmpeg_yolu.parent)
 
-    # FİX: --live-from-start əvəzinə --no-live-from-start
-    # TikTok HLS stream-i "from-start" dəstəkləmir
     ytdlp_cmd = [
         YT_DLP_CMD,
         "--ffmpeg-location", ffmpeg_dir,
-        "--no-live-from-start",          # ← DƏYİŞDİRİLDİ
+        "--no-live-from-start",
         "--no-part",
         "--hls-use-mpegts",
         "--no-warnings",
@@ -344,7 +401,7 @@ def recorder_baslat(
         "-map",       "0:a?",
         "-c",         "copy",
         "-f",         "segment",
-        "-segment_time", str(VIDEO_SEGMENT_SECONDS),
+        "-segment_time",     str(VIDEO_SEGMENT_SECONDS),
         "-reset_timestamps", "1",
         "-segment_format",   "mp4",
         output_pattern,
@@ -432,6 +489,41 @@ def video_fayllari(videos_dir: Path) -> list[Path]:
 
 
 # ===========================================================================
+# DİAQNOSTİKA — event strukturunu loglayır (debug üçün)
+# ===========================================================================
+
+def event_debug_logla(event, ad: str) -> None:
+    """
+    Hər yeni event tipinin strukturunu bir dəfə DEBUG səviyyəsində loglar.
+    Bu, gələcəkdə hansı field-lərin mövcud olduğunu anlamağa kömək edir.
+    """
+    try:
+        fields = {}
+        for attr in dir(event):
+            if attr.startswith("_"):
+                continue
+            try:
+                v = getattr(event, attr, None)
+                if callable(v):
+                    continue
+                fields[attr] = str(v)[:120]
+            except Exception:
+                fields[attr] = "<oxuna bilmir>"
+        log.debug(f"[{ad}] event strukturu: {json.dumps(fields, ensure_ascii=False)}")
+    except Exception:
+        pass
+
+
+_debug_loglanmis: set[str] = set()
+
+
+def bir_defe_debug(event, ad: str) -> None:
+    if ad not in _debug_loglanmis:
+        _debug_loglanmis.add(ad)
+        event_debug_logla(event, ad)
+
+
+# ===========================================================================
 # BİR SESSİYA
 # ===========================================================================
 
@@ -467,7 +559,7 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
     atomik_json_yaz(meta_json, meta)
 
     recorder: Optional[RecorderHandle] = None
-    stop_flag   = False
+    stop_flag     = False
     seen_comments: set[tuple] = set()
 
     # -----------------------------------------------------------------------
@@ -547,15 +639,13 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
                 log.warning("Recorder start alınmadı.")
 
     # -----------------------------------------------------------------------
-    # FİX: event.user əvəzinə user_melumat() köməkçisi istifadə edilir
-    # -----------------------------------------------------------------------
-
     @client.on(CommentEvent)
     async def on_comment(event: CommentEvent):
         try:
+            bir_defe_debug(event, "CommentEvent")
             user_id, u_id, nickname = user_melumat(event)
-            comment  = getattr(event, "comment", "")
-            created  = getattr(event, "create_time", None)
+            comment = getattr(event, "comment", "")
+            created = getattr(event, "create_time", None)
             key = (user_id, u_id, comment, str(created))
             if key in seen_comments:
                 return
@@ -584,9 +674,11 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
         except Exception as exc:
             log.warning(f"on_comment xətası: {exc}")
 
+    # -----------------------------------------------------------------------
     @client.on(GiftEvent)
     async def on_gift(event: GiftEvent):
         try:
+            bir_defe_debug(event, "GiftEvent")
             try:
                 if getattr(event.gift, "streakable", False) and getattr(event, "streaking", True):
                     return
@@ -607,12 +699,12 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
                 "user_id":       user_id,
                 "unique_id":     u_id,
                 "nickname":      nickname,
-                "gift_id":       getattr(event.gift, "id",            None),
-                "gift_name":     getattr(event.gift, "name",          None),
+                "gift_id":       getattr(event.gift, "id",         None),
+                "gift_name":     getattr(event.gift, "name",       None),
                 "repeat_count":  repeat_count,
                 "diamond_count": diamond_count,
                 "total_diamond": total_diamond,
-                "streakable":    getattr(event.gift, "streakable",    None),
+                "streakable":    getattr(event.gift, "streakable", None),
             }
             hadisə_yaz(data)
             csv_elave_et(
@@ -623,8 +715,8 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
                     "diamond_count", "total_diamond", "streakable",
                 ],
                 [
-                    data["time"],    data["user_id"],    data["unique_id"],
-                    data["nickname"], data["gift_id"],   data["gift_name"],
+                    data["time"],         data["user_id"],    data["unique_id"],
+                    data["nickname"],     data["gift_id"],    data["gift_name"],
                     data["repeat_count"], data["diamond_count"],
                     data["total_diamond"], data["streakable"],
                 ],
@@ -632,9 +724,11 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
         except Exception as exc:
             log.warning(f"on_gift xətası: {exc}")
 
+    # -----------------------------------------------------------------------
     @client.on(JoinEvent)
     async def on_join(event: JoinEvent):
         try:
+            bir_defe_debug(event, "JoinEvent")
             user_id, u_id, nickname = user_melumat(event)
             data = {
                 "type":      "join",
@@ -652,9 +746,11 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
         except Exception as exc:
             log.warning(f"on_join xətası: {exc}")
 
+    # -----------------------------------------------------------------------
     @client.on(LikeEvent)
     async def on_like(event: LikeEvent):
         try:
+            bir_defe_debug(event, "LikeEvent")
             user_id, u_id, nickname = user_melumat(event)
             data = {
                 "type":      "like",
@@ -674,9 +770,11 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
         except Exception as exc:
             log.warning(f"on_like xətası: {exc}")
 
+    # -----------------------------------------------------------------------
     @client.on(FollowEvent)
     async def on_follow(event: FollowEvent):
         try:
+            bir_defe_debug(event, "FollowEvent")
             user_id, u_id, nickname = user_melumat(event)
             data = {
                 "type":      "follow",
@@ -694,9 +792,11 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
         except Exception as exc:
             log.warning(f"on_follow xətası: {exc}")
 
+    # -----------------------------------------------------------------------
     @client.on(ShareEvent)
     async def on_share(event: ShareEvent):
         try:
+            bir_defe_debug(event, "ShareEvent")
             user_id, u_id, nickname = user_melumat(event)
             data = {
                 "type":      "share",
@@ -714,6 +814,7 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
         except Exception as exc:
             log.warning(f"on_share xətası: {exc}")
 
+    # -----------------------------------------------------------------------
     @client.on(LiveEndEvent)
     async def on_live_end(event: LiveEndEvent):
         nonlocal stop_flag
