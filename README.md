@@ -1,151 +1,405 @@
-# TikTok Live Comment Listener Python ( OSIRIS )
+#  TikTok Live Monitor və Recorder
 
-Bu layihə **TikTok Live yayımına qoşularaq real vaxtda gələn şərhləri oxuyan və terminalda göstərən Python scriptidir**.
+TikTok canlı yayımlarını avtomatik izləmək, event-ləri toplamaq və canlı videonu hissələrə bölərək saxlamaq üçün hazırlanmış **Python əsaslı monitor və recorder sistemi**.
 
-Script TikTok Live API wrapper olan **TikTokLive** kitabxanasından istifadə edir və aşağıdakı hadisələri izləyir:
+Bu layihə TikTok hesabı canlıya başlayan kimi:
 
-* Yayım otağına qoşulma
-* İstifadəçilərin yazdığı şərhlər
-* Yayım bağlantısının kəsilməsi
-
-Bu cür scriptlər aşağıdakı məqsədlər üçün istifadə oluna bilər:
-
-* TikTok Live analitikası
-* OSINT və sosial media monitorinqi
-* Chat analiz sistemləri
-* AI əsaslı mesaj analizi
-* Live stream moderasiya alətləri
+- canlıya qoşulur
+- event-ləri qeyd edir
+- videonu seqmentlərə bölüb saxlayır
+- sessiya məlumatlarını strukturlaşdırılmış şəkildə yazır
+- recorder dayansa belə yenidən başlatmağa çalışır
 
 ---
 
-# Funksiyalar
+## ✨ Xüsusiyyətlər
 
-Bu proqram aşağıdakı funksiyaları yerinə yetirir:
-
-* TikTok live stream-ə qoşulur
-* Yayım otağının ID məlumatını göstərir
-* Real vaxtda gələn şərhləri oxuyur
-* Şərh yazan istifadəçinin nickname-ni göstərir
-* Yayım bağlantısı kəsiləndə xəbər verir
-
----
-
-# İş prinsipi
-
-Script TikTok Live serverinə websocket bağlantısı yaradır və aşağıdakı event-ləri dinləyir:
-
-### ConnectEvent
-
-Yayım otağına qoşulduqda işləyir.
-
-### CommentEvent
-
-Yeni şərh gəldikdə işləyir.
-
-### DisconnectEvent
-
-Bağlantı kəsildikdə işləyir.
+- 🔴 TikTok hesabının live statusunu davamlı yoxlayır
+- 🎥 Canlı yayımı avtomatik yazır
+- 🧩 Videonu hissələrə (`live_001.mp4`, `live_002.mp4` və s.) bölür
+- 💬 Şərhləri (`comments`) saxlayır
+- 🎁 Hədiyyələri (`gifts`) saxlayır
+- ❤️ Like event-lərini saxlayır
+- ➕ Join event-lərini saxlayır
+- 👤 Follow event-lərini saxlayır
+- 📤 Share event-lərini saxlayır
+- 📄 JSON / CSV / TXT çıxış faylları yaradır
+- 🔁 Recorder crash olsa auto-restart etməyə çalışır
+- 🌐 Proxy dəstəyi var
+- 🍪 `sessionid` cookie dəstəyi var
+- ⚙️ `config.json` və environment variable dəstəyi var
+- 🐧 Ubuntu / Linux serverlər üçün uyğundur
 
 ---
 
-# Tələblər
+## 📌 Nə üçün istifadə olunur?
 
-Proqramın işləməsi üçün aşağıdakılar lazımdır:
+Bu layihə aşağıdakı məqsədlər üçün faydalıdır:
 
-* Python 3.9+
-* TikTokLive kitabxanası
+- TikTok live monitorinq
+- canlı yayım analizi
+- user davranışlarının toplanması
+- sonradan data analizi
+- comment / gift / like statistikası
+- stream arxivləmə
 
 ---
 
-# Qurulma
+# 📦 Tələblər
 
-## 1. Repository klon edin
+Sistem:
+
+- Ubuntu 20.04+
+- Debian / Kali / Linux Mint / digər Linux distributivləri
+- Python 3.10+
+- `ffmpeg`
+- `yt-dlp`
+
+Python kitabxanaları:
+
+- `TikTokLive`
+
+---
+
+# ⚙️ Ubuntu / Linux Quraşdırma
+
+## 1) Sistemi yenilə
 
 ```bash
-git clone https://github.com/USERNAME/tiktok-live-listener.git
-cd tiktok-live-listener
+sudo apt update && sudo apt upgrade -y
 ```
 
-## 2. Virtual environment yaradın
+## 2) Lazımi paketləri quraşdır
 
-Linux / Mac
+```bash
+sudo apt install -y python3 python3-pip python3-venv ffmpeg git
+```
+
+## 3) Repo-nu klonla
+
+```bash
+git clone https://github.com/f1r10/0s1r1s.git
+cd 0s1r1s
+```
+
+
+
+## 4) Virtual environment yarat
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 ```
 
-Windows
-
-```powershell
-python -m venv venv
-venv\Scripts\activate
-```
-
-## 3. Lazımi kitabxanaları yükləyin
+## 5) Python dependency-ləri quraşdır
 
 ```bash
-pip install TikTokLive
+pip install --upgrade pip
+pip install -U TikTokLive yt-dlp
 ```
 
 ---
 
-# İstifadə
-
-
-
-```python
-    python main2.py username
-    python main2.py @username
-
-
-```
-Xüsusiyyətlər:
-- username-ə görə avtomatik qovluq yaradır
-- output/<username>/<YYYY-MM-DD>/<HH-MM-SS>/ strukturu ilə saxlayır
-- videos/ altında 1 dəqiqəlik MP4 seqmentləri yaradır
-- data/ altında comment, gift, join və digər event fayllarını saxlayır
-- uzunmüddətli monitor rejimində işləyir
-- xətalarda geri-çəkilmə (backoff) və təkrar cəhd edir
-- recorder prosesi gözlənilmədən dayanarsa onu yenidən başlada bilir
-burada:
-
----
-
-## Scripti işə salmaq
+# 📁 Layihə strukturu
 
 ```bash
-python main2.py "username"
-```
-
----
-
-# Nümunə Output
-
-```
-✅ Bağlandı! Yayımçı: @asi_live1
-Otaq ID: 123456789
-
-💬 user1: salam
-💬 user2: necəsiz
-💬 user3: super yayım
-```
-
----
-
-# Layihə strukturu
-
-```
-tiktok-live-listener
-│
-├── main2.py
+.
+├── osiris.py
+├── config.json          # optional
 ├── README.md
+├── output/
+│   ├── monitor.log
+│   └── username/
+│       └── 2026-04-09/
+│           └── 14-32-10/
+│               ├── videos/
+│               │   ├── live_001.mp4
+│               │   ├── live_002.mp4
+│               │   └── live_003.mp4
+│               └── data/
+│                   ├── meta.json
+│                   ├── events.jsonl
+│                   ├── comments.csv
+│                   ├── comments.txt
+│                   ├── gifts.csv
+│                   ├── joins.csv
+│                   ├── likes.csv
+│                   ├── follows.csv
+│                   └── shares.csv
+└── venv/
+```
+
+---
+
+# ▶️ İstifadə
+
+## Sadə işə salma
+
+```bash
+python3 osiris.py username
+```
+
+və ya
+
+```bash
+python3 osiris.py @username
+```
+
+### Nümunə
+
+```bash
+python3 osiris.py mpl.id.official
+```
+
+və ya
+
+```bash
+python3 osiris.py @mpl.id.official
 ```
 
 ---
 
 
+# Proxy istifadə
+```bash
+export TIKTOK_WEB_PROXY=http://127.0.0.1:8080
+export TIKTOK_WS_PROXY=socks5://127.0.0.1:9050
+python3 osiris.py username
+```
 
-# Müəllif
+---
 
-GitHub: f1r10
+# 🍪 Session Cookie istifadəsi
+
+Bəzi hallarda `sessionid` cookie istifadə etmək faydalı ola bilər.
+
+```bash
+export TIKTOK_SESSION_ID=YOUR_SESSION_ID
+python3 osiris.py username
+```
+
+və ya `config.json` daxilində:
+
+```json
+{
+  "TIKTOK_SESSION_ID": "YOUR_SESSION_ID"
+}
+```
+
+---
+
+# Nümunə işə salma
+
+```bash
+python3 osiris.py @exampleuser
+```
+
+
+
+#  Arxa planda işlətmək
+
+## `nohup` ilə
+
+```bash
+nohup python3 osiris.py username > run.log 2>&1 &
+```
+
+### Prosesi yoxlamaq
+
+```bash
+ps aux | grep osiris.py
+```
+
+### Dayandırmaq
+
+```bash
+pkill -f "python3 osiris.py username"
+```
+
+---
+
+## `screen` ilə
+
+Əgər serverdə uzun müddət açıq saxlamaq istəyirsənsə:
+
+```bash
+sudo apt install -y screen
+screen -S tiktok-monitor
+source venv/bin/activate
+python3 osiris.py username
+```
+
+### Screen-dən çıxmaq
+
+```text
+Ctrl + A, sonra D
+```
+
+### Yenidən qoşulmaq
+
+```bash
+screen -r tiktok-monitor
+```
+
+---
+
+#  `systemd` Service ilə avtomatik başlatmaq
+
+Server restart olsa belə proqram avtomatik açılsın istəyirsənsə, `systemd` istifadə et.
+
+## 1) Service faylı yarat
+
+```bash
+sudo nano /etc/systemd/system/osiris.service
+```
+
+Aşağıdakı məzmunu yapışdır:
+
+```ini
+[Unit]
+Description=TikTok Live Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/YOUR_REPO
+Environment="PATH=/home/ubuntu/YOUR_REPO/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/ubuntu/YOUR_REPO/venv/bin/python /home/ubuntu/YOUR_REPO/osiris.py username
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+> `ubuntu`, repo yolu və `username` hissəsini öz sisteminə uyğun dəyiş.
+
+## 2) Service-i aktiv et
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable osiris.service
+sudo systemctl start osiris.service
+```
+
+## 3) Status yoxla
+
+```bash
+sudo systemctl status osiris.service
+```
+
+## 4) Loglara bax
+
+```bash
+journalctl -u osiris.service -f
+```
+
+
+# ❗ Mümkün problemlər və həllər
+
+## 1) `TikTokLive` tapılmadı
+
+### Xəta
+
+```bash
+ImportError: No module named TikTokLive
+```
+
+### Həll
+
+```bash
+source venv/bin/activate
+pip install -U TikTokLive yt-dlp
+```
+
+---
+
+## 2) `ffmpeg tapılmadı`
+
+### Həll
+
+```bash
+sudo apt install -y ffmpeg
+which ffmpeg
+```
+
+Əgər tapılırsa, lazım olsa `config.json` içində əl ilə göstər:
+
+```json
+{
+  "FFMPEG_EXE": "/usr/bin/ffmpeg"
+}
+```
+
+---
+
+## 3) `yt-dlp tapılmadı`
+
+### Həll
+
+```bash
+source venv/bin/activate
+pip install -U yt-dlp
+```
+
+Yoxla:
+
+```bash
+yt-dlp --version
+```
+
+---
+
+## 4) Recorder başlayır, sonra dayanır
+
+Mümkün səbəblər:
+
+- TikTok stream tərəfdə problem
+- `yt-dlp` format problemi
+- `ffmpeg` input stream kəsilməsi
+- rate-limit / blok
+- TikTok tərəfdə playback məhdudiyyəti
+
+Bu proqram recorder dayanarsa müəyyən limit daxilində yenidən başladmağa çalışır.
+
+---
+
+## 5) `DEVICE_BLOCKED` və ya `RATE_LIMIT`
+
+Bu proqram blok bypass etmir. Belə hallarda sadəcə gözləmə rejiminə keçir və sonra yenidən yoxlayır.
+
+### Tövsiyə olunan yanaşmalar
+
+- yoxlama intervalını artırmaq
+- session cookie istifadə etmək
+- uyğun proxy istifadə etmək
+- eyni anda çox hesab izləməmək
+- server IP reputasiyasını nəzərə almaq
+
+
+
+
+
+
+#  Sürətli Başlanğıc
+
+Əgər tez başlamaq istəyirsənsə, bunları birbaşa copy-paste et:
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3 python3-pip python3-venv ffmpeg git
+git clone https://github.com/ISTIFADECI_ADIN/YOUR_REPO.git
+cd YOUR_REPO
+
+python3 -m venv venv
+source venv/bin/activate
+
+pip install --upgrade pip
+pip install -U TikTokLive yt-dlp
+
+python3 osiris.py username
+```
+
+---
+
