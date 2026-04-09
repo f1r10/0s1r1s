@@ -1,27 +1,3 @@
-"""
-TikTok Live Monitor və Recorder
-===============================
-
-İstifadə:
-    python deneme.py username
-    python deneme.py @username
-
-Xüsusiyyətlər:
-- username-ə görə avtomatik qovluq yaradır
-- output/<username>/<YYYY-MM-DD>/<HH-MM-SS>/ strukturu ilə saxlayır
-- videos/ altında 1 dəqiqəlik MP4 seqmentləri yaradır
-- data/ altında comment, gift, join və digər event fayllarını saxlayır
-- uzunmüddətli monitor rejimində işləyir
-- xətalarda geri-çəkilmə (backoff) və təkrar cəhd edir
-- recorder prosesi gözlənilmədən dayanarsa onu yenidən başlada bilir
-
-Vacib qeyd:
-Bu skript platforma məhdudiyyətlərini bypass etmir və "heç vaxt blok olmaz"
-şəklində zəmanət vermir. TikTokLive rəsmi olmayan, reverse-engineered bir layihədir
-və PyPI sənədlərində də production-ready olmadığı qeyd olunur. TikTokLive həmçinin
-WebSocket proxy dəstəklədiyini bildirir, yt-dlp isə canlı axınları yaza bilir.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -41,9 +17,6 @@ from pathlib import Path
 from typing import Optional
 
 
-# ---------------------------------------------------------------------------
-# TikTokLive idxalı
-# ---------------------------------------------------------------------------
 try:
     from TikTokLive import TikTokLiveClient
     from TikTokLive.events import (
@@ -87,21 +60,24 @@ def _conf(ad: str, default=None):
     return os.environ.get(ad) or _CONFIG.get(ad) or default
 
 
-CHECK_INTERVAL_SECONDS = int(_conf("CHECK_INTERVAL_SECONDS", 20))
-OUTPUT_DIR = Path(_conf("OUTPUT_DIR", "output"))
-VIDEO_SEGMENT_SECONDS = int(_conf("VIDEO_SEGMENT_SECONDS", 60))
-YT_DLP_CMD = str(_conf("YT_DLP_CMD", "yt-dlp"))
-FFMPEG_EXE = _conf("FFMPEG_EXE")
-TIKTOK_PROXY = _conf("TIKTOK_PROXY")
-TIKTOK_WEB_PROXY = _conf("TIKTOK_WEB_PROXY")
-TIKTOK_WS_PROXY = _conf("TIKTOK_WS_PROXY")
-TIKTOK_SESSION_ID = _conf("TIKTOK_SESSION_ID")
+CHECK_INTERVAL_SECONDS   = int(_conf("CHECK_INTERVAL_SECONDS", 20))
+OUTPUT_DIR               = Path(_conf("OUTPUT_DIR", "output"))
+VIDEO_SEGMENT_SECONDS    = int(_conf("VIDEO_SEGMENT_SECONDS", 60))
+YT_DLP_CMD               = str(_conf("YT_DLP_CMD", "yt-dlp"))
+FFMPEG_EXE               = _conf("FFMPEG_EXE")
+TIKTOK_PROXY             = _conf("TIKTOK_PROXY")
+TIKTOK_WEB_PROXY         = _conf("TIKTOK_WEB_PROXY")
+TIKTOK_WS_PROXY          = _conf("TIKTOK_WS_PROXY")
+TIKTOK_SESSION_ID        = _conf("TIKTOK_SESSION_ID")
 
-MIN_BACKOFF = float(_conf("MIN_BACKOFF", 10))
-MAX_BACKOFF = float(_conf("MAX_BACKOFF", 300))
-BACKOFF_FACTOR = float(_conf("BACKOFF_FACTOR", 2))
-DEVICE_BLOCK_WAIT = float(_conf("DEVICE_BLOCK_WAIT", 300))
-RECORDER_RESTART_WAIT = float(_conf("RECORDER_RESTART_WAIT", 5))
+MIN_BACKOFF              = float(_conf("MIN_BACKOFF", 10))
+MAX_BACKOFF              = float(_conf("MAX_BACKOFF", 300))
+BACKOFF_FACTOR           = float(_conf("BACKOFF_FACTOR", 2))
+DEVICE_BLOCK_WAIT        = float(_conf("DEVICE_BLOCK_WAIT", 300))
+RECORDER_RESTART_WAIT    = float(_conf("RECORDER_RESTART_WAIT", 5))
+RECORDER_START_DELAY     = float(_conf("RECORDER_START_DELAY", 3))
+RECORDER_EARLY_EXIT_WAIT = float(_conf("RECORDER_EARLY_EXIT_WAIT", 8))
+RECORDER_MAX_RESTARTS    = int(_conf("RECORDER_MAX_RESTARTS", 10))
 
 
 # ===========================================================================
@@ -216,11 +192,9 @@ def ffmpeg_tap() -> Optional[Path]:
         if p.is_file():
             return p
         log.warning(f"FFMPEG_EXE göstərilib, amma tapılmadı: {p}")
-
     path_ffmpeg = shutil.which("ffmpeg")
     if path_ffmpeg:
         return Path(path_ffmpeg)
-
     return None
 
 
@@ -228,10 +202,7 @@ def ytdlp_var() -> bool:
     try:
         result = subprocess.run(
             [YT_DLP_CMD, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            shell=False,
+            capture_output=True, text=True, timeout=10, shell=False,
         )
         return result.returncode == 0
     except Exception:
@@ -256,15 +227,41 @@ def yeni_sessiya_qovlugu(unique_id: str) -> Path:
 
 
 # ===========================================================================
+# USER_INFO-DAN TƏHLÜKƏSİZ OXUMA  ← YENİ KÖMƏKÇI
+# ===========================================================================
+
+def user_melumat(event) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    event.user əvəzinə event.user_info proto obyektindən birbaşa oxuyur.
+    Bu, nickName/nick_name uyğunsuzluq xətasını tamamilə aradan qaldırır.
+    Qaytarır: (user_id, unique_id, nickname)
+    """
+    try:
+        info = event.user_info          # ham proto mesajı, heç bir wrapper yoxdur
+        uid  = str(getattr(info, "user_id",   None) or "")
+        uniq = str(getattr(info, "unique_id", None) or "")
+        # kitabxana versiyasına görə ya nick_name, ya nickName ola bilər
+        nick = (
+            getattr(info, "nick_name",  None)
+            or getattr(info, "nickname",  None)
+            or getattr(info, "nickName",  None)
+            or ""
+        )
+        return uid or None, uniq or None, str(nick) or None
+    except Exception:
+        return None, None, None
+
+
+# ===========================================================================
 # CLIENT
 # ===========================================================================
 
 def client_yarat(unique_id: str) -> TikTokLiveClient:
     temiz = username_temizle(unique_id)
-    kwargs = {"unique_id": f"@{temiz}"}
+    kwargs: dict = {"unique_id": f"@{temiz}"}
 
     web_proxy = proxy_yoxla(TIKTOK_WEB_PROXY or TIKTOK_PROXY, "WEB")
-    ws_proxy = proxy_yoxla(TIKTOK_WS_PROXY or TIKTOK_PROXY, "WS")
+    ws_proxy  = proxy_yoxla(TIKTOK_WS_PROXY  or TIKTOK_PROXY, "WS")
     if web_proxy:
         kwargs["web_proxy"] = web_proxy
     if ws_proxy:
@@ -287,55 +284,72 @@ def client_yarat(unique_id: str) -> TikTokLiveClient:
 # ===========================================================================
 # RECORDER PROSESİ
 # ===========================================================================
+
 class RecorderHandle:
     def __init__(self, ytdlp: subprocess.Popen, ffmpeg: subprocess.Popen):
-        self.ytdlp = ytdlp
-        self.ffmpeg = ffmpeg
+        self.ytdlp      = ytdlp
+        self.ffmpeg     = ffmpeg
         self.started_at = time.time()
 
     def alive(self) -> bool:
         return (self.ytdlp.poll() is None) and (self.ffmpeg.poll() is None)
 
+    def runtime(self) -> float:
+        return time.time() - self.started_at
+
+    def status(self) -> dict:
+        return {
+            "ytdlp_returncode":  self.ytdlp.poll(),
+            "ffmpeg_returncode": self.ffmpeg.poll(),
+            "runtime_seconds":   round(self.runtime(), 2),
+        }
 
 
-def recorder_baslat(unique_id: str, videos_dir: Path, ffmpeg_yolu: Optional[Path]) -> Optional[RecorderHandle]:
+def recorder_baslat(
+    unique_id: str, videos_dir: Path, ffmpeg_yolu: Optional[Path]
+) -> Optional[RecorderHandle]:
+
     if ffmpeg_yolu is None:
         log.warning("ffmpeg tapılmadı. Video yazılmayacaq.")
         return None
-
     if not ytdlp_var():
         log.warning("yt-dlp tapılmadı. Video yazılmayacaq.")
         return None
 
-    temiz = username_temizle(unique_id)
-    canlı_url = f"https://www.tiktok.com/@{temiz}/live"
+    temiz    = username_temizle(unique_id)
+    canli_url = f"https://www.tiktok.com/@{temiz}/live"
     output_pattern = str(videos_dir / "live_%03d.mp4")
     ffmpeg_dir = str(ffmpeg_yolu.parent)
 
+    # FİX: --live-from-start əvəzinə --no-live-from-start
+    # TikTok HLS stream-i "from-start" dəstəkləmir
     ytdlp_cmd = [
         YT_DLP_CMD,
         "--ffmpeg-location", ffmpeg_dir,
+        "--no-live-from-start",          # ← DƏYİŞDİRİLDİ
         "--no-part",
         "--hls-use-mpegts",
+        "--no-warnings",
         "-o", "-",
-        "--quiet",
-        canlı_url,
+        canli_url,
     ]
 
     ffmpeg_cmd = [
         str(ffmpeg_yolu),
         "-hide_banner",
-        "-loglevel", "warning",
-        "-i", "pipe:0",
-        "-c", "copy",
-        "-f", "segment",
+        "-loglevel",  "warning",
+        "-fflags",    "+genpts",
+        "-i",         "pipe:0",
+        "-map",       "0:v?",
+        "-map",       "0:a?",
+        "-c",         "copy",
+        "-f",         "segment",
         "-segment_time", str(VIDEO_SEGMENT_SECONDS),
         "-reset_timestamps", "1",
-        "-segment_format", "mp4",
+        "-segment_format",   "mp4",
         output_pattern,
     ]
 
-    log.info(f"Recorder başladı → {videos_dir}")
     log.debug("yt-dlp: " + " ".join(ytdlp_cmd))
     log.debug("ffmpeg: " + " ".join(ffmpeg_cmd))
 
@@ -344,23 +358,32 @@ def recorder_baslat(unique_id: str, videos_dir: Path, ffmpeg_yolu: Optional[Path
             ytdlp_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            text=False,
+            bufsize=0,
         )
         ffmpeg_proc = subprocess.Popen(
             ffmpeg_cmd,
             stdin=ytdlp_proc.stdout,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            text=False,
+            bufsize=0,
         )
         if ytdlp_proc.stdout:
             ytdlp_proc.stdout.close()
-        return RecorderHandle(ytdlp_proc, ffmpeg_proc)
+
+        handle = RecorderHandle(ytdlp_proc, ffmpeg_proc)
+        log.info(f"Recorder başladı → {videos_dir}")
+        return handle
+
     except Exception as exc:
         log.error(f"Recorder başlaya bilmədi: {exc}")
         return None
 
 
-
-def proses_dayandir(proc: Optional[subprocess.Popen], ad: str, timeout: int = 6) -> None:
+def proses_dayandir(
+    proc: Optional[subprocess.Popen], ad: str, timeout: int = 6
+) -> None:
     if proc is None or proc.poll() is not None:
         return
     try:
@@ -378,13 +401,30 @@ def proses_dayandir(proc: Optional[subprocess.Popen], ad: str, timeout: int = 6)
         pass
 
 
+def _stderr_oxu_ve_logla(proc: Optional[subprocess.Popen], ad: str) -> None:
+    if proc is None:
+        return
+    try:
+        if proc.poll() is not None and proc.stderr:
+            err = proc.stderr.read()
+            if err:
+                try:
+                    metn = err.decode("utf-8", errors="ignore").strip()
+                except Exception:
+                    metn = str(err)
+                if metn:
+                    log.warning(f"{ad} stderr:\n{metn[-3000:]}")
+    except Exception:
+        pass
+
 
 def recorder_dayandir(handle: Optional[RecorderHandle]) -> None:
     if handle is None:
         return
-    proses_dayandir(handle.ytdlp, "yt-dlp")
+    _stderr_oxu_ve_logla(handle.ytdlp,  "yt-dlp")
+    _stderr_oxu_ve_logla(handle.ffmpeg, "ffmpeg")
+    proses_dayandir(handle.ytdlp,  "yt-dlp")
     proses_dayandir(handle.ffmpeg, "ffmpeg", timeout=8)
-
 
 
 def video_fayllari(videos_dir: Path) -> list[Path]:
@@ -394,47 +434,47 @@ def video_fayllari(videos_dir: Path) -> list[Path]:
 # ===========================================================================
 # BİR SESSİYA
 # ===========================================================================
+
 async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
-    temiz = username_temizle(unique_id)
+    temiz  = username_temizle(unique_id)
     client = client_yarat(temiz)
 
     sessiya_dir = yeni_sessiya_qovlugu(temiz)
-    videos_dir = sessiya_dir / "videos"
-    data_dir = sessiya_dir / "data"
+    videos_dir  = sessiya_dir / "videos"
+    data_dir    = sessiya_dir / "data"
 
-    meta_json = data_dir / "meta.json"
+    meta_json    = data_dir / "meta.json"
     events_jsonl = data_dir / "events.jsonl"
     comments_csv = data_dir / "comments.csv"
-    gifts_csv = data_dir / "gifts.csv"
-    joins_csv = data_dir / "joins.csv"
-    likes_csv = data_dir / "likes.csv"
-    follows_csv = data_dir / "follows.csv"
-    shares_csv = data_dir / "shares.csv"
+    gifts_csv    = data_dir / "gifts.csv"
+    joins_csv    = data_dir / "joins.csv"
+    likes_csv    = data_dir / "likes.csv"
+    follows_csv  = data_dir / "follows.csv"
+    shares_csv   = data_dir / "shares.csv"
     comments_txt = data_dir / "comments.txt"
 
-    meta = {
-        "username": temiz,
-        "started_at": indi(),
-        "session_dir": str(sessiya_dir),
-        "videos_dir": str(videos_dir),
-        "data_dir": str(data_dir),
+    meta: dict = {
+        "username":              temiz,
+        "started_at":            indi(),
+        "session_dir":           str(sessiya_dir),
+        "videos_dir":            str(videos_dir),
+        "data_dir":              str(data_dir),
         "video_segment_seconds": VIDEO_SEGMENT_SECONDS,
-        "connected": False,
-        "recorder_started": False,
-        "result": None,
+        "connected":             False,
+        "recorder_started":      False,
+        "result":                None,
     }
     atomik_json_yaz(meta_json, meta)
 
-    recorder = recorder_baslat(temiz, videos_dir, ffmpeg_yolu)
-    if recorder:
-        meta["recorder_started"] = True
-        atomik_json_yaz(meta_json, meta)
-
-    stop_flag = False
+    recorder: Optional[RecorderHandle] = None
+    stop_flag   = False
     seen_comments: set[tuple] = set()
 
+    # -----------------------------------------------------------------------
     async def recorder_watchdog() -> None:
         nonlocal recorder, stop_flag
+        restart_count = 0
+
         while not stop_flag:
             await asyncio.sleep(5)
             if stop_flag:
@@ -444,171 +484,235 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
             if recorder.alive():
                 continue
 
-            log.warning("Recorder dayandı, yenidən başlatma cəhdi edilir...")
+            status = recorder.status()
+            log.warning(f"Recorder dayandı: {status}")
+            _stderr_oxu_ve_logla(recorder.ytdlp,  "yt-dlp")
+            _stderr_oxu_ve_logla(recorder.ffmpeg, "ffmpeg")
             recorder_dayandir(recorder)
+
+            if recorder.runtime() < 10:
+                log.warning(
+                    f"Recorder çox tez dayandı. "
+                    f"{RECORDER_EARLY_EXIT_WAIT:.1f}s sonra yenidən cəhd ediləcək..."
+                )
+                await asyncio.sleep(RECORDER_EARLY_EXIT_WAIT)
+
+            restart_count += 1
+            if restart_count > RECORDER_MAX_RESTARTS:
+                log.error("Recorder çox dəfə dayandı. Sonsuz restart qarşısı alındı.")
+                recorder = None
+                continue
+
             await asyncio.sleep(RECORDER_RESTART_WAIT)
             recorder = recorder_baslat(temiz, videos_dir, ffmpeg_yolu)
+
             if recorder is None:
                 log.warning("Recorder yenidən başlatmaq mümkün olmadı.")
+            else:
+                meta["recorder_restarted_at"]  = indi()
+                meta["recorder_restart_count"] = restart_count
+                atomik_json_yaz(meta_json, meta)
+                log.info(f"Recorder yenidən başladıldı. restart_count={restart_count}")
 
     watchdog_task = asyncio.create_task(recorder_watchdog())
 
     def hadisə_yaz(data: dict) -> None:
         jsonl_elave_et(events_jsonl, data)
 
+    # -----------------------------------------------------------------------
     @client.on(ConnectEvent)
     async def on_connect(event: ConnectEvent):
+        nonlocal recorder
         meta["connected"] = True
-        meta["room_id"] = str(getattr(client, "room_id", ""))
+        meta["room_id"]   = str(getattr(client, "room_id", ""))
         atomik_json_yaz(meta_json, meta)
+
         hadisə_yaz({
-            "type": "connect",
-            "time": indi(),
-            "room_id": str(getattr(client, "room_id", "")),
+            "type":     "connect",
+            "time":     indi(),
+            "room_id":  str(getattr(client, "room_id", "")),
             "username": temiz,
         })
         log.info(f"QOŞULDU → @{temiz} | room_id={getattr(client, 'room_id', '')}")
 
+        if recorder is None:
+            await asyncio.sleep(RECORDER_START_DELAY)
+            recorder = recorder_baslat(temiz, videos_dir, ffmpeg_yolu)
+            if recorder:
+                meta["recorder_started"]    = True
+                meta["recorder_started_at"] = indi()
+                atomik_json_yaz(meta_json, meta)
+                log.info("Recorder connect-dən sonra uğurla başladıldı.")
+            else:
+                log.warning("Recorder start alınmadı.")
+
+    # -----------------------------------------------------------------------
+    # FİX: event.user əvəzinə user_melumat() köməkçisi istifadə edilir
+    # -----------------------------------------------------------------------
+
     @client.on(CommentEvent)
     async def on_comment(event: CommentEvent):
-        user_id = getattr(event.user, "user_id", None)
-        u_id = getattr(event.user, "unique_id", None)
-        nickname = getattr(event.user, "nickname", None)
-        comment = getattr(event, "comment", "")
-        created = getattr(event, "create_time", None)
-        key = (user_id, u_id, comment, created)
-        if key in seen_comments:
-            return
-        seen_comments.add(key)
-
-        data = {
-            "type": "comment",
-            "time": indi(),
-            "user_id": user_id,
-            "unique_id": u_id,
-            "nickname": nickname,
-            "comment": comment,
-            "create_time": str(created) if created else None,
-        }
-        hadisə_yaz(data)
-        csv_elave_et(
-            comments_csv,
-            ["time", "user_id", "unique_id", "nickname", "comment", "create_time"],
-            [data["time"], user_id, u_id, nickname, comment, data["create_time"]],
-        )
         try:
-            with comments_txt.open("a", encoding="utf-8") as f:
-                f.write(f"[{data['time']}] {nickname} ({u_id}): {comment}\n")
-        except Exception:
-            pass
+            user_id, u_id, nickname = user_melumat(event)
+            comment  = getattr(event, "comment", "")
+            created  = getattr(event, "create_time", None)
+            key = (user_id, u_id, comment, str(created))
+            if key in seen_comments:
+                return
+            seen_comments.add(key)
+
+            data = {
+                "type":        "comment",
+                "time":        indi(),
+                "user_id":     user_id,
+                "unique_id":   u_id,
+                "nickname":    nickname,
+                "comment":     comment,
+                "create_time": str(created) if created else None,
+            }
+            hadisə_yaz(data)
+            csv_elave_et(
+                comments_csv,
+                ["time", "user_id", "unique_id", "nickname", "comment", "create_time"],
+                [data["time"], user_id, u_id, nickname, comment, data["create_time"]],
+            )
+            try:
+                with comments_txt.open("a", encoding="utf-8") as f:
+                    f.write(f"[{data['time']}] {nickname} ({u_id}): {comment}\n")
+            except Exception:
+                pass
+        except Exception as exc:
+            log.warning(f"on_comment xətası: {exc}")
 
     @client.on(GiftEvent)
     async def on_gift(event: GiftEvent):
         try:
-            if getattr(event.gift, "streakable", False) and getattr(event, "streaking", True):
-                return
-        except Exception:
-            pass
+            try:
+                if getattr(event.gift, "streakable", False) and getattr(event, "streaking", True):
+                    return
+            except Exception:
+                pass
 
-        repeat_count = getattr(event, "repeat_count", 1)
-        diamond_count = getattr(event.gift, "diamond_count", None)
-        try:
-            total_diamond = (diamond_count or 0) * (repeat_count or 1)
-        except Exception:
-            total_diamond = None
+            user_id, u_id, nickname = user_melumat(event)
+            repeat_count  = getattr(event, "repeat_count",  1)
+            diamond_count = getattr(event.gift, "diamond_count", None)
+            try:
+                total_diamond = (diamond_count or 0) * (repeat_count or 1)
+            except Exception:
+                total_diamond = None
 
-        data = {
-            "type": "gift",
-            "time": indi(),
-            "user_id": getattr(event.user, "user_id", None),
-            "unique_id": getattr(event.user, "unique_id", None),
-            "nickname": getattr(event.user, "nickname", None),
-            "gift_id": getattr(event.gift, "id", None),
-            "gift_name": getattr(event.gift, "name", None),
-            "repeat_count": repeat_count,
-            "diamond_count": diamond_count,
-            "total_diamond": total_diamond,
-            "streakable": getattr(event.gift, "streakable", None),
-        }
-        hadisə_yaz(data)
-        csv_elave_et(
-            gifts_csv,
-            [
-                "time", "user_id", "unique_id", "nickname", "gift_id", "gift_name",
-                "repeat_count", "diamond_count", "total_diamond", "streakable",
-            ],
-            [
-                data["time"], data["user_id"], data["unique_id"], data["nickname"],
-                data["gift_id"], data["gift_name"], data["repeat_count"],
-                data["diamond_count"], data["total_diamond"], data["streakable"],
-            ],
-        )
+            data = {
+                "type":          "gift",
+                "time":          indi(),
+                "user_id":       user_id,
+                "unique_id":     u_id,
+                "nickname":      nickname,
+                "gift_id":       getattr(event.gift, "id",            None),
+                "gift_name":     getattr(event.gift, "name",          None),
+                "repeat_count":  repeat_count,
+                "diamond_count": diamond_count,
+                "total_diamond": total_diamond,
+                "streakable":    getattr(event.gift, "streakable",    None),
+            }
+            hadisə_yaz(data)
+            csv_elave_et(
+                gifts_csv,
+                [
+                    "time", "user_id", "unique_id", "nickname",
+                    "gift_id", "gift_name", "repeat_count",
+                    "diamond_count", "total_diamond", "streakable",
+                ],
+                [
+                    data["time"],    data["user_id"],    data["unique_id"],
+                    data["nickname"], data["gift_id"],   data["gift_name"],
+                    data["repeat_count"], data["diamond_count"],
+                    data["total_diamond"], data["streakable"],
+                ],
+            )
+        except Exception as exc:
+            log.warning(f"on_gift xətası: {exc}")
 
     @client.on(JoinEvent)
     async def on_join(event: JoinEvent):
-        data = {
-            "type": "join",
-            "time": indi(),
-            "user_id": getattr(event.user, "user_id", None),
-            "unique_id": getattr(event.user, "unique_id", None),
-            "nickname": getattr(event.user, "nickname", None),
-        }
-        hadisə_yaz(data)
-        csv_elave_et(
-            joins_csv,
-            ["time", "user_id", "unique_id", "nickname"],
-            [data["time"], data["user_id"], data["unique_id"], data["nickname"]],
-        )
+        try:
+            user_id, u_id, nickname = user_melumat(event)
+            data = {
+                "type":      "join",
+                "time":      indi(),
+                "user_id":   user_id,
+                "unique_id": u_id,
+                "nickname":  nickname,
+            }
+            hadisə_yaz(data)
+            csv_elave_et(
+                joins_csv,
+                ["time", "user_id", "unique_id", "nickname"],
+                [data["time"], user_id, u_id, nickname],
+            )
+        except Exception as exc:
+            log.warning(f"on_join xətası: {exc}")
 
     @client.on(LikeEvent)
     async def on_like(event: LikeEvent):
-        data = {
-            "type": "like",
-            "time": indi(),
-            "user_id": getattr(event.user, "user_id", None),
-            "unique_id": getattr(event.user, "unique_id", None),
-            "nickname": getattr(event.user, "nickname", None),
-            "count": getattr(event, "count", None),
-            "total": getattr(event, "total", None),
-        }
-        hadisə_yaz(data)
-        csv_elave_et(
-            likes_csv,
-            ["time", "user_id", "unique_id", "nickname", "count", "total"],
-            [data["time"], data["user_id"], data["unique_id"], data["nickname"], data["count"], data["total"]],
-        )
+        try:
+            user_id, u_id, nickname = user_melumat(event)
+            data = {
+                "type":      "like",
+                "time":      indi(),
+                "user_id":   user_id,
+                "unique_id": u_id,
+                "nickname":  nickname,
+                "count":     getattr(event, "count", None),
+                "total":     getattr(event, "total", None),
+            }
+            hadisə_yaz(data)
+            csv_elave_et(
+                likes_csv,
+                ["time", "user_id", "unique_id", "nickname", "count", "total"],
+                [data["time"], user_id, u_id, nickname, data["count"], data["total"]],
+            )
+        except Exception as exc:
+            log.warning(f"on_like xətası: {exc}")
 
     @client.on(FollowEvent)
     async def on_follow(event: FollowEvent):
-        data = {
-            "type": "follow",
-            "time": indi(),
-            "user_id": getattr(event.user, "user_id", None),
-            "unique_id": getattr(event.user, "unique_id", None),
-            "nickname": getattr(event.user, "nickname", None),
-        }
-        hadisə_yaz(data)
-        csv_elave_et(
-            follows_csv,
-            ["time", "user_id", "unique_id", "nickname"],
-            [data["time"], data["user_id"], data["unique_id"], data["nickname"]],
-        )
+        try:
+            user_id, u_id, nickname = user_melumat(event)
+            data = {
+                "type":      "follow",
+                "time":      indi(),
+                "user_id":   user_id,
+                "unique_id": u_id,
+                "nickname":  nickname,
+            }
+            hadisə_yaz(data)
+            csv_elave_et(
+                follows_csv,
+                ["time", "user_id", "unique_id", "nickname"],
+                [data["time"], user_id, u_id, nickname],
+            )
+        except Exception as exc:
+            log.warning(f"on_follow xətası: {exc}")
 
     @client.on(ShareEvent)
     async def on_share(event: ShareEvent):
-        data = {
-            "type": "share",
-            "time": indi(),
-            "user_id": getattr(event.user, "user_id", None),
-            "unique_id": getattr(event.user, "unique_id", None),
-            "nickname": getattr(event.user, "nickname", None),
-        }
-        hadisə_yaz(data)
-        csv_elave_et(
-            shares_csv,
-            ["time", "user_id", "unique_id", "nickname"],
-            [data["time"], data["user_id"], data["unique_id"], data["nickname"]],
-        )
+        try:
+            user_id, u_id, nickname = user_melumat(event)
+            data = {
+                "type":      "share",
+                "time":      indi(),
+                "user_id":   user_id,
+                "unique_id": u_id,
+                "nickname":  nickname,
+            }
+            hadisə_yaz(data)
+            csv_elave_et(
+                shares_csv,
+                ["time", "user_id", "unique_id", "nickname"],
+                [data["time"], user_id, u_id, nickname],
+            )
+        except Exception as exc:
+            log.warning(f"on_share xətası: {exc}")
 
     @client.on(LiveEndEvent)
     async def on_live_end(event: LiveEndEvent):
@@ -624,6 +728,7 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
         log.info(f"BAĞLANTI KƏSİLDİ → @{temiz}")
         stop_flag = True
 
+    # -----------------------------------------------------------------------
     result = "tamam"
     try:
         log.info(f"Sessiyaya qoşulma cəhdi → @{temiz}")
@@ -640,24 +745,29 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
             log.error(f"Sessiya xətası: {exc}")
     finally:
         stop_flag = True
+
         watchdog_task.cancel()
         try:
             await watchdog_task
-        except Exception:
+        except (asyncio.CancelledError, Exception):
             pass
+
         recorder_dayandir(recorder)
 
         files = video_fayllari(videos_dir)
-        meta["finished_at"] = indi()
-        meta["result"] = result
-        meta["segment_count"] = len(files)
-        meta["segments"] = [f.name for f in files]
+        meta["finished_at"]    = indi()
+        meta["result"]         = result
+        meta["segment_count"]  = len(files)
+        meta["segments"]       = [f.name for f in files]
         try:
             meta["video_size_bytes"] = sum(f.stat().st_size for f in files)
         except Exception:
             pass
         atomik_json_yaz(meta_json, meta)
-        log.info(f"Sessiya bağlandı → @{temiz} | nəticə={result} | seqment={len(files)}")
+        log.info(
+            f"Sessiya bağlandı → @{temiz} | "
+            f"nəticə={result} | seqment={len(files)}"
+        )
 
     return result
 
@@ -665,8 +775,9 @@ async def bir_sessiya_isle(unique_id: str, ffmpeg_yolu: Optional[Path]) -> str:
 # ===========================================================================
 # MONITOR
 # ===========================================================================
+
 async def monitor_et(unique_id: str) -> None:
-    temiz = username_temizle(unique_id)
+    temiz       = username_temizle(unique_id)
     ffmpeg_yolu = ffmpeg_tap()
 
     if ffmpeg_yolu is None:
@@ -674,7 +785,7 @@ async def monitor_et(unique_id: str) -> None:
     if not ytdlp_var():
         log.warning("yt-dlp tapılmadı. Yalnız event-lər saxlanacaq.")
 
-    backoff = MIN_BACKOFF
+    backoff     = MIN_BACKOFF
     error_count = 0
 
     log.info(f"Monitor başladı → @{temiz}")
@@ -682,12 +793,15 @@ async def monitor_et(unique_id: str) -> None:
     while True:
         try:
             client = client_yarat(temiz)
-            live = await client.is_live()
+            live   = await client.is_live()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             error_count += 1
-            wait_time = min(MIN_BACKOFF * (BACKOFF_FACTOR ** (error_count - 1)), MAX_BACKOFF)
+            wait_time = min(
+                MIN_BACKOFF * (BACKOFF_FACTOR ** (error_count - 1)),
+                MAX_BACKOFF,
+            )
             wait_time = jitter_sleep_muddeti(wait_time)
             log.warning(f"Canlı statusu yoxlanarkən xəta ({error_count}): {exc}")
             log.info(f"Təkrar cəhd üçün gözləmə: {wait_time:.1f}s")
@@ -695,7 +809,7 @@ async def monitor_et(unique_id: str) -> None:
             continue
 
         error_count = 0
-        backoff = MIN_BACKOFF
+        backoff     = MIN_BACKOFF
 
         if live:
             log.info(f"@{temiz} hazırda canlıdır. Sessiya başladılır...")
@@ -712,7 +826,7 @@ async def monitor_et(unique_id: str) -> None:
                 log.warning(f"Məhdudiyyət səbəbilə {wait_time:.1f}s gözlənilir...")
                 await asyncio.sleep(wait_time)
             elif result == "xeta":
-                backoff = min(backoff * BACKOFF_FACTOR, MAX_BACKOFF)
+                backoff   = min(backoff * BACKOFF_FACTOR, MAX_BACKOFF)
                 wait_time = jitter_sleep_muddeti(backoff)
                 log.info(f"Sessiya xətası sonrası gözləmə: {wait_time:.1f}s")
                 await asyncio.sleep(wait_time)
@@ -729,20 +843,17 @@ async def monitor_et(unique_id: str) -> None:
 
 def istifade_komeyi() -> None:
     print("İstifadə:")
-    print("  python deneme.py username")
-    print("  python deneme.py @username")
+    print("  python osiris.py username")
+    print("  python osiris.py @username")
     print()
     print("İstəyə bağlı mühit dəyişənləri:")
-    print("  OUTPUT_DIR")
-    print("  CHECK_INTERVAL_SECONDS")
-    print("  VIDEO_SEGMENT_SECONDS")
-    print("  FFMPEG_EXE")
-    print("  YT_DLP_CMD")
-    print("  TIKTOK_SESSION_ID")
-    print("  TIKTOK_PROXY")
-    print("  TIKTOK_WEB_PROXY")
-    print("  TIKTOK_WS_PROXY")
-
+    for var in [
+        "OUTPUT_DIR", "CHECK_INTERVAL_SECONDS", "VIDEO_SEGMENT_SECONDS",
+        "FFMPEG_EXE", "YT_DLP_CMD", "TIKTOK_SESSION_ID",
+        "TIKTOK_PROXY", "TIKTOK_WEB_PROXY", "TIKTOK_WS_PROXY",
+        "RECORDER_START_DELAY", "RECORDER_EARLY_EXIT_WAIT", "RECORDER_MAX_RESTARTS",
+    ]:
+        print(f"  {var}")
 
 
 def signal_qur(loop: asyncio.AbstractEventLoop) -> None:
@@ -755,7 +866,7 @@ def signal_qur(loop: asyncio.AbstractEventLoop) -> None:
             task.cancel()
 
     try:
-        loop.add_signal_handler(signal.SIGINT, stop_all)
+        loop.add_signal_handler(signal.SIGINT,  stop_all)
         loop.add_signal_handler(signal.SIGTERM, stop_all)
     except Exception:
         pass
@@ -772,9 +883,9 @@ if __name__ == "__main__":
         istifade_komeyi()
         sys.exit(1)
 
-    unique_id = username_temizle(sys.argv[1])
+    unique_id   = username_temizle(sys.argv[1])
     ffmpeg_path = ffmpeg_tap()
-    ytdlp_ok = ytdlp_var()
+    ytdlp_ok    = ytdlp_var()
 
     print("=" * 68)
     print("  TikTok Live Monitor və Recorder")
@@ -786,7 +897,7 @@ if __name__ == "__main__":
     print(f"  Yoxlama aralığı     : {CHECK_INTERVAL_SECONDS}s")
     print(f"  Video seqmenti      : {VIDEO_SEGMENT_SECONDS}s")
     print(f"  Proxy (web)         : {TIKTOK_WEB_PROXY or TIKTOK_PROXY or 'Yoxdur'}")
-    print(f"  Proxy (ws)          : {TIKTOK_WS_PROXY or TIKTOK_PROXY or 'Yoxdur'}")
+    print(f"  Proxy (ws)          : {TIKTOK_WS_PROXY  or TIKTOK_PROXY or 'Yoxdur'}")
     print(f"  Sessiya cookie      : {'Var' if TIKTOK_SESSION_ID else 'Yoxdur'}")
     print("=" * 68)
     print("  Çıxmaq üçün CTRL+C basın")
